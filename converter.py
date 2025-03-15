@@ -7,6 +7,7 @@ from thrift_tools.thrift_message import ThriftMessage, ThriftStruct
 from thrift.Thrift import TType, TMessageType
 from thrift.protocol.TBinaryProtocol import TBinaryProtocol
 from thrift.transport.TTransport import TMemoryBuffer
+from classes import ThriftJsonEncoder, CustomResponseMessage
 
 FIELD_TYPE_MAP = {
     "bool": TType.BOOL,
@@ -21,14 +22,6 @@ FIELD_TYPE_MAP = {
     "set": TType.SET,
     "list": TType.LIST
 }
-
-# Decoding Functions
-class ThriftJsonEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, ThriftStruct):
-            return o.as_dict
-        else:
-            return super().default(o)
 
 def parse_data(filename, markers=None):
     if markers is None:
@@ -143,19 +136,26 @@ def decode_headers(header):
     return message
 
 # Based on: https://github.com/LAripping/thrift-inspector
+
 def decode_thrift_message(thrift_frame):
-    # Try more marker patterns - modified to catch more variants
+    # First try direct response detection and handling
+    if len(thrift_frame) >= 4 and (thrift_frame[:4] == b'\x80\x01\x00\x02' or 
+                                  thrift_frame[:4] == b'\x82\x21\x00\x02'):
+        print("Detected response message directly")
+        try:
+            # Use our custom response message handler
+            return CustomResponseMessage(thrift_frame)
+        except Exception as e:
+            print(f"Error parsing response with custom handler: {e}")
+    
+    # Try with different markers for requests
     candidates = [
-        b'\x80\x01\x00\x01', 
-        b'\x80\x01\x00\x02', 
-        b'\x80\x01\x00\x03', 
-        b'\x80\x01\x00\x04',
-        # Add more variations that might appear in your data
-        b'\x80\x01\x00', 
-        b'\x80\x01',
-        # Try standalone markers
-        b'\x00\x01',
-        b'\x00\x02'
+        b'\x80\x01\x00\x01',  # Call message
+        b'\x80\x01\x00\x02',  # Reply message
+        b'\x82\x21\x00\x01',  # Variant call
+        b'\x82\x21\x00\x02',  # Variant reply
+        b'\x80\x01',          # Just protocol marker
+        b'\x82\x21',          # Variant protocol marker
     ]
     
     for candidate in candidates:
@@ -165,34 +165,36 @@ def decode_thrift_message(thrift_frame):
                 # Get the frame starting at the marker
                 frame_slice = thrift_frame[idx:]
                 
-                # Try to parse with error handling
                 try:
-                    msg, msglen = ThriftMessage.read(frame_slice, read_values=True)
-                    if msg:
-                        return msg
+                    # Check if this is a response marker
+                    if candidate in [b'\x80\x01\x00\x02', b'\x82\x21\x00\x02']:
+                        return CustomResponseMessage(frame_slice)
+                    
+                    # Otherwise try normal request parsing
+                    try:
+                        msg, msglen = ThriftMessage.read(frame_slice, read_values=True)
+                        if msg:
+                            return msg
+                    except TypeError as te:
+                        if "unhashable type: 'ThriftStruct'" in str(te):
+                            print("Caught unhashable ThriftStruct error, using custom handler")
+                            # If we get the unhashable error, try our custom handler
+                            return CustomResponseMessage(frame_slice)
+                        else:
+                            raise te
                 except Exception as e:
                     print(f"Error parsing with marker {candidate.hex()}: {e}")
                     continue
         except Exception as e:
             print(f"Error finding marker {candidate.hex()}: {e}")
-            continue
     
-    # If we couldn't parse the message with any of the markers,
-    # try just using the raw frame as a last resort
-    try:
-        msg, msglen = ThriftMessage.read(thrift_frame, read_values=True)
-        return msg
-    except Exception as e:
-        print(f"Error parsing raw thrift frame: {e}")
-    
-    # If all the attempts failed, log detailed information and return a placeholder
+    # If all else fails, return an empty message
     print("=======================================")
     print("FAILED TO DECODE THRIFT MESSAGE")
     print(f"Frame length: {len(thrift_frame)} bytes")
     print(f"First 20 bytes: {thrift_frame[:20].hex()}")
     print("=======================================")
     
-    # Return a placeholder object that won't cause errors when accessed
     return create_empty_thrift_message()
 
 def create_empty_thrift_message():
