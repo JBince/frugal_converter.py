@@ -6,6 +6,7 @@ import argparse
 from thrift_tools.thrift_message import ThriftMessage, ThriftStruct
 from thrift.Thrift import TType, TMessageType
 from thrift.protocol.TBinaryProtocol import TBinaryProtocol
+from thrift.protocol.TCompactProtocol import TCompactProtocol
 from thrift.transport.TTransport import TMemoryBuffer
 from classes import ThriftJsonEncoder, CustomResponseMessage
 
@@ -472,7 +473,10 @@ def write_thrift_message(thrift_json):
 
     msg_type = msg_type_map[msg_type_str]
     transport = TMemoryBuffer()
-    protocol = TBinaryProtocol(transport)
+    if args.compact:
+        protocol = TCompactProtocol(transport)
+    else:
+        protocol = TBinaryProtocol(transport)
 
     protocol.writeMessageBegin(method_name, msg_type, seqid)
     if thrift_json["args"]:
@@ -532,6 +536,7 @@ if __name__ == '__main__':
     parser.add_argument('-o','--output', required=False, type=str, help='Output file')
     parser.add_argument('-e','--encode', required=False, action='store_true', help='Encode file')
     parser.add_argument('-d','--decode', required=False, action='store_true', help='Decode file')
+    parser.add_argument('-c', '--compact', required=False, action='store_true', help='Use compact protocol')
     # Add encoding functionality
     args = parser.parse_args()
     if (args.encode and args.decode) or (not args.encode and not args.decode):
